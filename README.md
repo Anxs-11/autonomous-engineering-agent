@@ -14,7 +14,7 @@ AEA connects your Jira project management workflow directly to your GitHub codeb
 |------|---------|--------|
 | Week 1 | Jira webhook ingestion + Claude classification + SQLite storage | ✅ Done |
 | Week 2 | Clarification loop — post questions to Jira, re-classify on reply | ✅ Done |
-| Week 3 | GitHub fetcher + ChromaDB RAG infrastructure | ✅ Done |
+| Week 3 | GitHub fetcher (file tree + content via REST API) | ✅ Done |
 | Week 4 | Two-pass code generation + GitHub PR creation | ✅ Done |
 | Week 5 | Slack notifications | 🔲 Upcoming |
 | Week 6 | PR review loop | 🔲 Upcoming |
@@ -40,9 +40,11 @@ If the ticket is vague, AEA posts targeted clarifying questions directly as a Ji
 The target GitHub repository is read from a `repo:owner/name` label on the Jira ticket — no hardcoded config needed. Optionally, a `branch:branchname` label overrides the default target branch.
 
 ### 4. Two-Pass Code Generation
-**Pass 1 — File Selection:** Claude receives the full repository file tree and the ticket description. It returns a list of the specific files it needs to read to solve the ticket.
+**Pass 1 — File Selection:** Claude receives the full repository file tree (fetched live from GitHub) and the ticket description. It returns a list of the specific files it needs to read to solve the ticket.
 
-**Pass 2 — Code Generation:** Claude receives the full content of those selected files and generates a JSON diff of changes: which files to create or modify, and exactly what the new content should be.
+**Pass 2 — Code Generation:** Claude receives the full content of those selected files (fetched live from GitHub) and generates a JSON diff of changes: which files to create or modify, and exactly what the new content should be.
+
+No vector database is involved — the agent reads the codebase directly via the GitHub REST API, which ensures it always works with the latest code.
 
 ### 5. GitHub PR Creation
 AEA creates a feature branch (`{ticket-id}-dev`), commits every changed file, and opens a Pull Request targeting the `dev` branch — with a description explaining every change made.
@@ -68,8 +70,8 @@ aea/
 │   │   ├── github_pr.py               # GitHub API: branch, commits, PR creation
 │   │   ├── jira_client.py             # Jira API: post comments, read comments
 │   │   └── rag/
-│   │       ├── indexer.py             # ChromaDB vector indexing (fault-tolerant)
-│   │       └── retriever.py           # ChromaDB semantic retrieval
+│   │       ├── indexer.py             # ChromaDB vector indexing (built, not yet active)
+│   │       └── retriever.py           # ChromaDB semantic retrieval (built, not yet active)
 │   ├── models/
 │   │   └── ticket.py                  # Pydantic request/response models
 │   └── db/
@@ -89,8 +91,8 @@ aea/
 - **GitHub REST API** — file tree reading, branch creation, file commits, PR management
 - **Jira REST API v3** — comment posting (ADF format), label reading, comment reading
 - **SQLite + SQLAlchemy** — ticket state persistence
-- **ChromaDB** — RAG vector store (built, ready for activation)
 - **ngrok** — local tunnel for Jira webhook delivery during development
+- **ChromaDB** — RAG vector store infrastructure (built, not yet active — code generation currently uses GitHub fetcher directly)
 
 ---
 
