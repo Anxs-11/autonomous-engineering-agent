@@ -1,6 +1,10 @@
 # Environment variables — never commit real secrets
 .env
 
+# Runtime databases — generated locally, not source code
+*.db
+chroma_db/
+
 # Python
 __pycache__/
 *.py[cod]

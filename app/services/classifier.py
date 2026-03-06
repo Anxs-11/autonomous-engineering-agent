@@ -1,14 +1,24 @@
 import json
+import logging
 import os
+import re
 
+import anthropic
 from dotenv import load_dotenv
-from openai import OpenAI
 
 from app.models.ticket import ClassificationLabel, ClassificationResult
 
 load_dotenv()
 
-client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
+logger = logging.getLogger(__name__)
+
+client = anthropic.Anthropic(
+    api_key=os.getenv("ANTHROPIC_API_KEY"),
+    base_url=os.getenv("ANTHROPIC_BASE_URL"),
+    default_headers={
+        "anthropic-version": "2023-06-01",
+    },
+)
 
 SYSTEM_PROMPT = """\
 You are an engineering ticket classifier for an Autonomous Engineering Agent (AEA).
@@ -60,18 +70,29 @@ def classify_ticket(title: str, description: str) -> ClassificationResult:
         "Classify this ticket."
     )
 
-    response = client.chat.completions.create(
-        model="gpt-4o",
+    response = client.messages.create(
+        model="claude-sonnet-4-5",
+        max_tokens=512,
+        temperature=0.1,
+        system=SYSTEM_PROMPT,
         messages=[
-            {"role": "system", "content": SYSTEM_PROMPT},
             {"role": "user", "content": user_content},
         ],
-        temperature=0.1,
-        max_tokens=150,
-        response_format={"type": "json_object"},
     )
 
-    raw: str = response.choices[0].message.content.strip()
+    raw: str = response.content[0].text.strip()
+    logger.info("Claude raw response: %s", raw)
+
+    # Strip markdown fences if Claude wrapped the JSON (e.g. ```json ... ```)
+    fenced = re.search(r"```(?:json)?\s*([\s\S]+?)\s*```", raw)
+    if fenced:
+        raw = fenced.group(1).strip()
+
+    # Extract the first {...} block in case there is any surrounding text
+    brace_match = re.search(r"\{[\s\S]+\}", raw)
+    if brace_match:
+        raw = brace_match.group(0)
+
     data: dict = json.loads(raw)
 
     label = ClassificationLabel(data["label"])

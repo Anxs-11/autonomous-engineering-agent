@@ -11,6 +11,13 @@ class ClassificationLabel(str, Enum):
     NONCODE = "NONCODE"
 
 
+class TicketStatus(str, Enum):
+    AWAITING_CLARIFICATION = "AWAITING_CLARIFICATION"
+    AUTOMATABLE = "AUTOMATABLE"
+    COMPLEX = "COMPLEX"
+    NONCODE = "NONCODE"
+
+
 class JiraWebhookPayload(BaseModel):
     """Raw Jira webhook payload (top-level shape)."""
     webhookEvent: str
@@ -40,6 +47,8 @@ class TicketResponse(BaseModel):
     assignee: Optional[str]
     classification: str
     reason: str
+    status: str
+    rag_context: Optional[str]
     created_at: datetime
 
     model_config = {"from_attributes": True}
