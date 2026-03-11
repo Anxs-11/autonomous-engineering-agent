@@ -8,6 +8,90 @@ AEA connects your Jira project management workflow directly to your GitHub codeb
 
 ---
 
+## Architecture
+
+```
+┌─────────────────────────────────────────────────────────────────────────────────┐
+│                                                                                 │
+│   DEVELOPER                                                                     │
+│   Creates / updates Jira ticket                                                 │
+│                                                                                 │
+└──────────────────────────────┬──────────────────────────────────────────────────┘
+                               │  Webhook  (POST /webhook/jira)
+                               ▼
+┌─────────────────────────────────────────────────────────────────────────────────┐
+│  JIRA CLOUD                                                                     │
+│  ┌──────────────────────────────────────────────────────────────────────────┐   │
+│  │  Issue Created / Updated / Comment Added                                 │   │
+│  └──────────────────────────────────────────────────────────────────────────┘   │
+└──────────────────────────────┬──────────────────────────────────────────────────┘
+                               │
+                               ▼
+╔═════════════════════════════════════════════════════════════════════════════════╗
+║  AEA  —  Autonomous Engineering Agent  (FastAPI · uvicorn)                     ║
+║                                                                                 ║
+║  ┌───────────────────────────────────────────────────────────────────────────┐  ║
+║  │  WEBHOOK HANDLER  (webhook.py)                                            │  ║
+║  │                                                                           │  ║
+║  │   Receives event ──► reads ticket state from SQLite                      │  ║
+║  │                                                                           │  ║
+║  │         ┌─────────────────────────────────────────────┐                  │  ║
+║  │         │          CLASSIFIER  (Claude)               │                  │  ║
+║  │         │                                             │                  │  ║
+║  │         │   AUTOMATABLE ──► code generation flow      │                  │  ║
+║  │         │   CLARIFICATION ──► ask questions in Jira   │                  │  ║
+║  │         │   COMPLEX / NONCODE ──► store & skip        │                  │  ║
+║  │         └─────────────────────────────────────────────┘                  │  ║
+║  └───────────────────────────────────────────────────────────────────────────┘  ║
+║                  │                              │                               ║
+║                  │ AUTOMATABLE                  │ CLARIFICATION                 ║
+║                  ▼                              ▼                               ║
+║  ┌──────────────────────────┐    ┌──────────────────────────────────────────┐  ║
+║  │  CODE GENERATOR          │    │  QUESTION GENERATOR  (Claude)            │  ║
+║  │                          │    │                                          │  ║
+║  │  Pass 1 ──► Claude       │    │  Generates targeted questions            │  ║
+║  │  reads file tree,        │    │  ──► posts as Jira comment               │  ║
+║  │  selects relevant files  │    │  ──► waits for developer reply           │  ║
+║  │                          │    └──────────────────────────────────────────┘  ║
+║  │  Pass 2 ──► Claude       │                                                  ║
+║  │  reads full file content,│                                                  ║
+║  │  generates code changes  │                                                  ║
+║  └──────────┬───────────────┘                                                  ║
+║             │                                                                   ║
+║             ▼                                                                   ║
+║  ┌──────────────────────────┐    ┌──────────────────────────────────────────┐  ║
+║  │  GITHUB FETCHER          │    │  GITHUB PR CREATOR                       │  ║
+║  │                          │    │                                          │  ║
+║  │  • Fetch full file tree  │    │  • Create feature branch                 │  ║
+║  │  • Fetch file contents   │    │  • Commit changed files                  │  ║
+║  │    via GitHub REST API   │    │  • Open Pull Request ──► returns PR URL  │  ║
+║  └──────────────────────────┘    └──────────────┬───────────────────────────┘  ║
+║                                                  │                              ║
+║             ┌────────────────────────────────────┘                             ║
+║             │  PR URL                                                           ║
+║             ▼                                                                   ║
+║  ┌──────────────────────────────────────────────────────────────────────────┐  ║
+║  │  NOTIFIER                                                                │  ║
+║  │                                                                          │  ║
+║  │  ──► Post PR link as Jira comment                                        │  ║
+║  │  ──► Send rich Slack notification  (ticket · repo · files · PR button)   │  ║
+║  │  ──► Transition Jira ticket to "In Progress"                             │  ║
+║  └──────────────────────────────────────────────────────────────────────────┘  ║
+║                                                                                 ║
+╚═════════════════════════════════════════════════════════════════════════════════╝
+          │                          │                          │
+          ▼                          ▼                          ▼
+┌──────────────────┐    ┌────────────────────┐    ┌────────────────────────────┐
+│   GITHUB REPO    │    │    JIRA CLOUD      │    │     SLACK CHANNEL          │
+│                  │    │                    │    │                            │
+│  Feature branch  │    │  PR link comment   │    │  PR created notification   │
+│  File commits    │    │  Status updated    │    │  with direct PR button     │
+│  Pull Request    │    │  to In Progress    │    │                            │
+└──────────────────┘    └────────────────────┘    └────────────────────────────┘
+```
+
+---
+
 ## Progress
 
 | Week | Feature | Status |
