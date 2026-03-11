@@ -106,7 +106,7 @@ def _open_pull_request(
     title: str,
     body: str,
 ) -> str:
-    """Open a PR and return its HTML URL."""
+    """Open a PR and return its HTML URL. If one already exists, return its URL."""
     url = f"{GITHUB_API}/repos/{repo}/pulls"
     payload = {
         "title": title,
@@ -115,6 +115,20 @@ def _open_pull_request(
         "base": base_branch,
     }
     resp = client.post(url, headers=_HEADERS, json=payload)
+
+    if resp.status_code == 422 and "pull request already exists" in resp.text.lower():
+        # PR already open for this branch — fetch and return its URL
+        logger.warning("PR already exists for %s, fetching existing URL.", head_branch)
+        list_resp = client.get(
+            url,
+            headers=_HEADERS,
+            params={"head": f"{repo.split('/')[0]}:{head_branch}", "state": "open"},
+        )
+        list_resp.raise_for_status()
+        prs = list_resp.json()
+        if prs:
+            return prs[0]["html_url"]
+
     resp.raise_for_status()
     return resp.json()["html_url"]
 
@@ -126,6 +140,7 @@ def create_pull_request(
     explanation: str,
     repo: str,
     base_branch: str = "dev",
+    testing_checklist: list[str] | None = None,
 ) -> str:
     """
     End-to-end: create branch, commit all file changes, open PR.
@@ -153,37 +168,60 @@ def create_pull_request(
     new_branch = f"{ticket_id.lower()}-dev"
     pr_title = f"[{ticket_id}] {title}"
 
+    _t_pr_start = time.time()
+    logger.info("[%s] ================================================", ticket_id)
+    logger.info("[%s] 🚀 GitHub PR creation starting", ticket_id)
+    logger.info("[%s]    Repo   : %s", ticket_id, repo)
+    logger.info("[%s]    Branch : %s -> %s", ticket_id, new_branch, base_branch)
+    logger.info("[%s]    Files  : %d", ticket_id, len(changes))
+    logger.info("[%s] ================================================", ticket_id)
+
     try:
         with httpx.Client(timeout=30) as client:
             # 1. Get base SHA
+            logger.info("[%s] 🔗 Step 1/3: Fetching base branch SHA (%s)...", ticket_id, base_branch)
             base_sha = _get_base_sha(client, repo, base_branch)
-            logger.info("Base branch %s SHA: %s", base_branch, base_sha)
+            logger.info("[%s] ✅ Step 1/3 done: SHA=%s", ticket_id, base_sha[:7])
 
             # 2. Create feature branch
+            logger.info("[%s] 🌿 Step 2/3: Creating branch %s...", ticket_id, new_branch)
             _create_branch(client, repo, new_branch, base_sha)
-            logger.info("Created branch: %s", new_branch)
+            logger.info("[%s] ✅ Step 2/3 done: branch ready", ticket_id)
 
             # 3. Commit each file
-            for change in changes:
+            logger.info("[%s] 📤 Step 3/3: Committing %d file(s)...", ticket_id, len(changes))
+            for i, change in enumerate(changes, 1):
                 path = change["file_path"]
                 content = change["new_content"]
                 existing_sha = _get_file_sha(client, repo, path, new_branch)
                 commit_msg = f"[{ticket_id}] Update {path}"
+                logger.info("[%s]    [%d/%d] Committing %s...", ticket_id, i, len(changes), path)
                 _commit_file(client, repo, path, content, new_branch, commit_msg, existing_sha)
                 # Small delay to avoid secondary rate limits
                 time.sleep(0.3)
+            logger.info("[%s] ✅ Step 3/3 done: all files committed", ticket_id)
 
             # 4. Open PR
+            checklist_section = ""
+            if testing_checklist:
+                items = "\n".join(f"- [ ] {item}" for item in testing_checklist)
+                checklist_section = f"\n\n## Testing Checklist\n{items}"
+
             pr_body = (
                 f"**Jira Ticket:** {ticket_id}\n\n"
                 f"**Changes made by AEA (Autonomous Engineering Agent):**\n\n"
-                f"{explanation}\n\n"
+                f"{explanation}"
+                f"{checklist_section}\n\n"
                 f"---\n*This PR was generated automatically. Please review carefully before merging.*"
             )
+            logger.info("[%s] 📝 Opening Pull Request...", ticket_id)
             pr_url = _open_pull_request(
                 client, repo, new_branch, base_branch, pr_title, pr_body
             )
-            logger.info("PR created: %s", pr_url)
+            elapsed = time.time() - _t_pr_start
+            logger.info("[%s] ================================================", ticket_id)
+            logger.info("[%s] 🎉 PR CREATED in %.1fs -> %s", ticket_id, elapsed, pr_url)
+            logger.info("[%s] ================================================", ticket_id)
             return pr_url
 
     except httpx.HTTPStatusError as exc:

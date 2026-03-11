@@ -16,7 +16,7 @@ AEA connects your Jira project management workflow directly to your GitHub codeb
 | Week 2 | Clarification loop — post questions to Jira, re-classify on reply | ✅ Done |
 | Week 3 | GitHub fetcher (file tree + content via REST API) | ✅ Done |
 | Week 4 | Two-pass code generation + GitHub PR creation | ✅ Done |
-| Week 5 | Slack notifications | 🔲 Upcoming |
+| Week 5 | Slack notifications on PR creation and failure | ✅ Done |
 | Week 6 | PR review loop | 🔲 Upcoming |
 
 ---
@@ -135,6 +135,9 @@ GITHUB_REPO=                   # leave blank — repo comes from Jira labels
 GITHUB_DEV_BRANCH=dev          # default PR target branch
 GITHUB_BRANCH=main
 GITHUB_REPO_PATH_FILTER=       # optional subfolder filter e.g. src/
+
+# Slack
+SLACK_WEBHOOK_URL=             # Slack Incoming Webhook URL — leave blank to disable
 ```
 
 ### 4. Run the server

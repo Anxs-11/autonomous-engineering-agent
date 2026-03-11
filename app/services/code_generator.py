@@ -26,6 +26,7 @@ import json
 import logging
 import os
 import re
+import time
 
 import anthropic
 from dotenv import load_dotenv
@@ -42,7 +43,7 @@ _client = anthropic.Anthropic(
     default_headers={"anthropic-version": "2023-06-01"},
 )
 
-_MODEL = "claude-sonnet-4-5"
+_MODEL = os.getenv("ANTHROPIC_MODEL", "claude-sonnet-4-5")
 _MAX_FILES_TO_FETCH = 15   # cap to avoid context overflow
 
 
@@ -76,13 +77,19 @@ Rules:
         "new_content": "<complete new file content as a string>"
       }
     ],
-    "explanation": "<one paragraph: what changed and why>"
+    "explanation": "<one paragraph: what changed and why>",
+    "testing_checklist": [
+      "<specific test step 1>",
+      "<specific test step 2>"
+    ]
   }
 - Always output the FULL file content — never partial diffs.
 - Only include files that actually need to change.
 - Preserve existing code style, imports, and patterns.
+- The testing_checklist must contain 3-6 concrete, specific steps a reviewer can follow
+  to manually verify the changes work correctly.
 - If the ticket is ambiguous or cannot be safely implemented, return:
-  {"changes": [], "explanation": "<reason>"}
+  {"changes": [], "explanation": "<reason>", "testing_checklist": []}
 """
 
 
@@ -117,6 +124,7 @@ Repository file tree:
 Which files do you need to read to implement this ticket? Return JSON."""
 
     try:
+        t0 = time.time()
         response = _client.messages.create(
             model=_MODEL,
             max_tokens=1024,
@@ -124,6 +132,7 @@ Which files do you need to read to implement this ticket? Return JSON."""
             system=_PASS1_SYSTEM,
             messages=[{"role": "user", "content": user_content}],
         )
+        logger.info("[%s] ⏱  Pass 1 Claude call completed in %.1fs", ticket_id, time.time() - t0)
     except Exception as exc:
         logger.error("Pass 1 API error: %s", exc)
         return []
@@ -140,8 +149,8 @@ Which files do you need to read to implement this ticket? Return JSON."""
     tree_set = set(file_tree)
     valid = [f for f in selected if f in tree_set]
     logger.info(
-        "Pass 1: Claude selected %d file(s) from %d in tree: %s",
-        len(valid), len(file_tree), valid,
+        "[%s] ✅ Pass 1 done: selected %d/%d file(s): %s",
+        ticket_id, len(valid), len(file_tree), valid,
     )
     return valid[:_MAX_FILES_TO_FETCH]
 
@@ -171,13 +180,16 @@ Relevant source files:{files_block}
 Generate the required file changes as JSON per the schema in your instructions."""
 
     try:
+        t0 = time.time()
+        logger.info("[%s] ⏳ Pass 2: sending %d file(s) to Claude for code generation...", ticket_id, len(file_contents))
         response = _client.messages.create(
             model=_MODEL,
-            max_tokens=8192,
+            max_tokens=16000,
             temperature=0.1,
             system=_PASS2_SYSTEM,
             messages=[{"role": "user", "content": user_content}],
         )
+        logger.info("[%s] ⏱  Pass 2 Claude call completed in %.1fs", ticket_id, time.time() - t0)
     except Exception as exc:
         logger.error("Pass 2 API error: %s", exc)
         return {"changes": [], "explanation": f"LLM call failed: {exc}"}
@@ -199,11 +211,15 @@ Generate the required file changes as JSON per the schema in your instructions."
     ]
 
     explanation = result.get("explanation", "")
+    testing_checklist = [
+        str(item) for item in result.get("testing_checklist", [])
+        if isinstance(item, str) and item.strip()
+    ]
     logger.info(
-        "Pass 2: %d file(s) to change. %s",
-        len(validated), explanation[:120] if explanation else "",
+        "[%s] ✅ Pass 2 done: %d file(s) to change. %s",
+        ticket_id, len(validated), explanation[:120] if explanation else "",
     )
-    return {"changes": validated, "explanation": explanation}
+    return {"changes": validated, "explanation": explanation, "testing_checklist": testing_checklist}
 
 
 def generate_code_changes(
@@ -222,10 +238,16 @@ def generate_code_changes(
 
     Returns {"changes": [...], "explanation": str}.
     """
-    logger.info("Starting two-pass code generation for %s on %s@%s", ticket_id, repo, branch)
+    logger.info("[%s] ==================================================", ticket_id)
+    logger.info("[%s] 🤖 AEA code generation started", ticket_id)
+    logger.info("[%s]    Repo   : %s @ %s", ticket_id, repo, branch)
+    logger.info("[%s]    Title  : %s", ticket_id, title)
+    logger.info("[%s] ==================================================", ticket_id)
+    _t_start = time.time()
 
     # --- Fetch file tree ---
     path_filter = os.getenv("GITHUB_REPO_PATH_FILTER", "")
+    logger.info("[%s] 📂 Step 1/4: Fetching file tree from GitHub...", ticket_id)
     try:
         file_tree = list_code_files(repo, branch, path_filter)
     except Exception as exc:
@@ -235,19 +257,22 @@ def generate_code_changes(
     if not file_tree:
         return {"changes": [], "explanation": "No indexable files found in the repository."}
 
-    logger.info("File tree: %d files found in %s@%s", len(file_tree), repo, branch)
+    logger.info("[%s] ✅ Step 1/4 done: %d files in tree", ticket_id, len(file_tree))
 
     # --- Pass 1: select files ---
+    logger.info("[%s] 🧠 Step 2/4: Pass 1 — Claude selecting relevant files...", ticket_id)
     selected_files = _pass1_select_files(ticket_id, title, description, file_tree)
     if not selected_files:
         return {"changes": [], "explanation": "Claude could not identify relevant files for this ticket."}
 
     # --- Fetch full file contents ---
     file_contents: dict[str, str] = {}
-    for path in selected_files:
+    logger.info("[%s] 📥 Step 3/4: Fetching %d file(s) from GitHub...", ticket_id, len(selected_files))
+    for i, path in enumerate(selected_files, 1):
         try:
             content = get_file_content(repo, path, branch)
             if content:
+                logger.info("[%s]    [%d/%d] Fetched: %s (%d chars)", ticket_id, i, len(selected_files), path, len(content))
                 file_contents[path] = content
             else:
                 logger.warning("Empty content for %s — skipping.", path)
@@ -257,68 +282,17 @@ def generate_code_changes(
     if not file_contents:
         return {"changes": [], "explanation": "Could not fetch content of any selected files."}
 
-    logger.info("Fetched %d file(s) for Pass 2.", len(file_contents))
+    logger.info("[%s] ✅ Step 3/4 done: fetched %d file(s) for Pass 2", ticket_id, len(file_contents))
 
     # --- Pass 2: generate code ---
-    return _pass2_generate_code(ticket_id, title, description, file_contents)
+    logger.info("[%s] 🤖 Step 4/4: Pass 2 — Claude generating code changes...", ticket_id)
+    result = _pass2_generate_code(ticket_id, title, description, file_contents)
 
-
-import json
-import logging
-import os
-import re
-
-import anthropic
-from dotenv import load_dotenv
-
-load_dotenv()
-
-logger = logging.getLogger(__name__)
-
-_client = anthropic.Anthropic(
-    api_key=os.getenv("ANTHROPIC_API_KEY", ""),
-    base_url=os.getenv("ANTHROPIC_BASE_URL"),
-    default_headers={"anthropic-version": "2023-06-01"},
-)
-
-_MODEL = "claude-sonnet-4-5"
-
-_SYSTEM_PROMPT = """You are an expert software engineer.
-You will be given a Jira ticket (title + description) and relevant sections of
-the codebase retrieved via semantic search.
-
-Your task: produce the exact file changes needed to fulfil the ticket.
-
-Rules:
-- Return ONLY valid JSON — no prose, no markdown fences.
-- The JSON must match this schema exactly:
-  {
-    "changes": [
-      {
-        "file_path": "<repo-relative path, e.g. app/main.py>",
-        "new_content": "<complete new content of the file as a string>"
-      }
-    ],
-    "explanation": "<one paragraph explaining what you changed and why>"
-  }
-- Always output the FULL file content for every changed file — never partial diffs.
-- Only include files that actually need to change.
-- Preserve existing code style, imports, and patterns from the context.
-- If the ticket is ambiguous or impossible to implement safely, return:
-  {"changes": [], "explanation": "<reason why no changes were made>"}
-"""
-
-
-def _strip_json_fences(text: str) -> str:
-    """Remove markdown code fences if Claude wraps the JSON in them."""
-    match = re.search(r"```(?:json)?\s*([\s\S]+?)\s*```", text)
-    if match:
-        return match.group(1).strip()
-    # Try to extract the first {...} block
-    match = re.search(r"(\{[\s\S]+\})", text)
-    if match:
-        return match.group(1).strip()
-    return text.strip()
-
-
+    elapsed = time.time() - _t_start
+    n_changes = len(result.get("changes", []))
+    logger.info("[%s] ==================================================", ticket_id)
+    logger.info("[%s] 🏁 AEA code generation COMPLETE in %.1fs", ticket_id, elapsed)
+    logger.info("[%s]    Files changed : %d", ticket_id, n_changes)
+    logger.info("[%s] ==================================================", ticket_id)
+    return result
 

@@ -114,3 +114,76 @@ def get_bot_account_id() -> Optional[str]:
     except httpx.HTTPError as exc:
         logger.error("Failed to fetch bot account ID: %s", exc)
         return None
+
+
+def transition_to_in_progress(issue_key: str) -> None:
+    """
+    Move a Jira ticket to 'In Progress' by finding and applying the matching transition.
+    Silently logs and returns if Jira is not configured or transition is not found.
+    """
+    if not _is_configured():
+        return
+
+    # 1. Fetch available transitions
+    url = f"{JIRA_BASE_URL}/rest/api/3/issue/{issue_key}/transitions"
+    try:
+        response = httpx.get(url, auth=_AUTH, timeout=15)
+        response.raise_for_status()
+        transitions = response.json().get("transitions", [])
+    except httpx.HTTPError as exc:
+        logger.error("Failed to fetch transitions for %s: %s", issue_key, exc)
+        return
+
+    # 2. Find transition whose name contains 'in progress' (case-insensitive)
+    transition_id: Optional[str] = None
+    for t in transitions:
+        if "in progress" in t.get("name", "").lower():
+            transition_id = t["id"]
+            break
+
+    if not transition_id:
+        logger.warning("No 'In Progress' transition found for %s — skipping.", issue_key)
+        return
+
+    # 3. Apply the transition
+    try:
+        response = httpx.post(
+            url,
+            auth=_AUTH,
+            json={"transition": {"id": transition_id}},
+            timeout=15,
+        )
+        response.raise_for_status()
+        logger.info("Ticket %s transitioned to In Progress.", issue_key)
+    except httpx.HTTPError as exc:
+        logger.error("Failed to transition %s to In Progress: %s", issue_key, exc)
+
+
+def remove_label(issue_key: str, label: str) -> None:
+    """
+    Remove a single label from a Jira ticket.
+    Silently logs and returns if Jira is not configured or the ticket cannot be fetched.
+    """
+    if not _is_configured():
+        return
+
+    issue_url = f"{JIRA_BASE_URL}/rest/api/3/issue/{issue_key}"
+    try:
+        # Fetch current labels
+        resp = httpx.get(issue_url, auth=_AUTH, timeout=15)
+        resp.raise_for_status()
+        current_labels: list[str] = resp.json().get("fields", {}).get("labels", []) or []
+        new_labels = [l for l in current_labels if l != label]
+        if len(new_labels) == len(current_labels):
+            return  # label wasn't there
+        # Update labels
+        update_resp = httpx.put(
+            issue_url,
+            auth=_AUTH,
+            json={"fields": {"labels": new_labels}},
+            timeout=15,
+        )
+        update_resp.raise_for_status()
+        logger.info("Removed label '%s' from %s.", label, issue_key)
+    except httpx.HTTPError as exc:
+        logger.error("Failed to remove label '%s' from %s: %s", label, issue_key, exc)

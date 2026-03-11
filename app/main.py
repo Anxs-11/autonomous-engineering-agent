@@ -1,9 +1,16 @@
+import logging
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
 
 from app.db.database import init_db
 from app.routes.webhook import router as webhook_router
+
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s  %(levelname)-8s  %(name)s — %(message)s",
+    datefmt="%H:%M:%S",
+)
 
 
 @asynccontextmanager

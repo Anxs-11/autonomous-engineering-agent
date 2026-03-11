@@ -71,7 +71,7 @@ def classify_ticket(title: str, description: str) -> ClassificationResult:
     )
 
     response = client.messages.create(
-        model="claude-sonnet-4-5",
+        model=os.getenv("ANTHROPIC_MODEL", "claude-sonnet-4-5"),
         max_tokens=512,
         temperature=0.1,
         system=SYSTEM_PROMPT,

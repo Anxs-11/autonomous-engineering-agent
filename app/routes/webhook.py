@@ -15,8 +15,9 @@ from app.models.ticket import ClassificationLabel, TicketResponse
 from app.services.classifier import classify_ticket
 from app.services.code_generator import generate_code_changes
 from app.services.github_pr import create_pull_request
-from app.services.jira_client import get_human_comments, post_comment
+from app.services.jira_client import get_human_comments, post_comment, remove_label, transition_to_in_progress
 from app.services.question_generator import generate_clarifying_questions
+from app.services.slack_notifier import notify_pr_created, notify_pr_failed
 from app.services.rag.indexer import index_repository, is_indexed
 from app.services.rag.retriever import format_context_for_llm, retrieve_relevant_chunks
 
@@ -124,6 +125,11 @@ def _trigger_code_generation(
         return
 
     def _run() -> None:
+        import time as _time
+        _t_run_start = _time.time()
+        logger.info("[%s] ================================================", ticket_id)
+        logger.info("[%s] 🎤 AEA pipeline STARTED — '%s'", ticket_id, title)
+        logger.info("[%s] ================================================", ticket_id)
         try:
             result = generate_code_changes(
                 ticket_id=ticket_id,
@@ -134,6 +140,7 @@ def _trigger_code_generation(
             )
             changes = result.get("changes", [])
             explanation = result.get("explanation", "")
+            testing_checklist = result.get("testing_checklist", [])
 
             if not changes:
                 msg = (
@@ -151,6 +158,7 @@ def _trigger_code_generation(
                 explanation=explanation,
                 repo=repo,
                 base_branch=base_branch,
+                testing_checklist=testing_checklist,
             )
             msg = (
                 f"AEA has generated a Pull Request for this ticket:\n\n"
@@ -158,14 +166,28 @@ def _trigger_code_generation(
                 f"*{len(changes)} file(s) changed. Please review before merging.*"
             )
             post_comment(ticket_id, msg)
+            transition_to_in_progress(ticket_id)
             logger.info("PR created for %s: %s", ticket_id, pr_url)
+            notify_pr_created(
+                ticket_id=ticket_id,
+                title=title,
+                pr_url=pr_url,
+                repo=repo,
+                num_files=len(changes),
+            )
+            _total = _time.time() - _t_run_start
+            logger.info("[%s] ================================================", ticket_id)
+            logger.info("[%s] ⭐ PIPELINE COMPLETE in %.1fs", ticket_id, _total)
+            logger.info("[%s] ================================================", ticket_id)
 
         except Exception as exc:  # noqa: BLE001
-            logger.error("Code generation / PR creation failed for %s: %s", ticket_id, exc)
+            _total = _time.time() - _t_run_start
+            logger.error("[%s] 💥 PIPELINE FAILED after %.1fs: %s", ticket_id, _total, exc)
             post_comment(
                 ticket_id,
                 f"AEA encountered an error while generating code:\n\n`{exc}`",
             )
+            notify_pr_failed(ticket_id=ticket_id, title=title, error=str(exc))
 
     _pr_executor.submit(_run)
 
@@ -354,23 +376,37 @@ async def jira_webhook(
         db.refresh(record)
         return record
 
+    # -----------------------------------------------------------------------
+    # aea-retry label — force re-trigger from ANY status
+    # -----------------------------------------------------------------------
+    labels: list = payload.get("issue", {}).get("fields", {}).get("labels") or []
+    if "aea-retry" in labels:
+        # Remove the label FIRST so subsequent webhooks don't re-trigger
+        remove_label(ticket_id, "aea-retry")
+        if not ticket_repo:
+            post_comment(
+                ticket_id,
+                "Retry requested but no `repo:` label found on this ticket.\n\n"
+                "Please add a label in the format: `repo:owner/repository-name`",
+            )
+        else:
+            logger.info("aea-retry label detected on %s (status: %s) — re-triggering code generation.", ticket_id, existing.status)
+            post_comment(ticket_id, "AEA retry triggered — generating code changes...")
+            existing.status = "AUTOMATABLE"
+            existing.title = title
+            existing.description = description
+            existing.assignee = assignee
+            db.commit()
+            _trigger_code_generation(
+                ticket_id, title, description,
+                repo=ticket_repo, base_branch=ticket_base_branch,
+            )
+            db.refresh(existing)
+            return existing
+        db.refresh(existing)
+        return existing
+
     if existing.status not in ("AWAITING_CLARIFICATION", "AWAITING_REPO"):
-        # Check for retry label — re-trigger code generation on demand
-        labels: list = payload.get("issue", {}).get("fields", {}).get("labels") or []
-        if "aea-retry" in labels:
-            if not ticket_repo:
-                post_comment(
-                    ticket_id,
-                    "Retry requested but no `repo:` label found on this ticket.\n\n"
-                    "Please add a label in the format: `repo:owner/repository-name`",
-                )
-            else:
-                logger.info("aea-retry label detected on %s — re-triggering code generation.", ticket_id)
-                post_comment(ticket_id, "AEA retry triggered — generating code changes...")
-                _trigger_code_generation(
-                    ticket_id, title, description,
-                    repo=ticket_repo, base_branch=ticket_base_branch,
-                )
         # Ticket already resolved — update fields and return
         existing.title = title
         existing.description = description
