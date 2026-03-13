@@ -31,7 +31,7 @@ AEA connects your Jira project management workflow directly to your GitHub codeb
 ║  AEA  —  Autonomous Engineering Agent  (FastAPI · uvicorn)                     ║
 ║                                                                                 ║
 ║  ┌───────────────────────────────────────────────────────────────────────────┐  ║
-║  │  WEBHOOK HANDLER  (webhook.py)                                            │  ║
+║  │  JIRA WEBHOOK HANDLER  (webhook.py)                                       │  ║
 ║  │                                                                           │  ║
 ║  │   Receives event ──► reads ticket state from SQLite                      │  ║
 ║  │                                                                           │  ║
@@ -87,7 +87,31 @@ AEA connects your Jira project management workflow directly to your GitHub codeb
 │  Feature branch  │    │  PR link comment   │    │  PR created notification   │
 │  File commits    │    │  Status updated    │    │  with direct PR button     │
 │  Pull Request    │    │  to In Progress    │    │                            │
-└──────────────────┘    └────────────────────┘    └────────────────────────────┘
+└────────┬─────────┘    └────────────────────┘    └────────────────────────────┘
+         │
+         │  Reviewer submits feedback / requests changes
+         │  Webhook  (POST /webhook/github)
+         ▼
+╔═════════════════════════════════════════════════════════════════════════════════╗
+║  AEA  —  PR REVIEW LOOP  (github_webhook.py)                                   ║
+║                                                                                 ║
+║  1. Verify GitHub webhook signature                                             ║
+║  2. Read all review comments + inline line comments  (GitHub REST API)          ║
+║  3. Re-generate code addressing every comment  (Claude)                         ║
+║  4. Commit revised files to same feature branch  →  PR auto-updates             ║
+║  5. Post confirmation comment on PR                                             ║
+║                                                                                 ║
+║  (Loop repeats for each subsequent review round)                                ║
+╚══════════════════════════════╤══════════════════════════════════════════════════╝
+                               │
+                               ▼
+                    ┌──────────────────────┐
+                    │   GITHUB REPO        │
+                    │                      │
+                    │  Revised files       │
+                    │  committed to same   │
+                    │  feature branch      │
+                    └──────────────────────┘
 ```
 
 ---
