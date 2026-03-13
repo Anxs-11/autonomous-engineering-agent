@@ -10,84 +10,35 @@ AEA connects your Jira project management workflow directly to your GitHub codeb
 
 ## Architecture
 
-```
-┌─────────────────────────────────────────────────────────────────────────────────┐
-│                                                                                 │
-│   DEVELOPER                                                                     │
-│   Creates / updates Jira ticket                                                 │
-│                                                                                 │
-└──────────────────────────────┬──────────────────────────────────────────────────┘
-                               │  Webhook  (POST /webhook/jira)
-                               ▼
-┌─────────────────────────────────────────────────────────────────────────────────┐
-│  JIRA CLOUD                                                                     │
-│  ┌──────────────────────────────────────────────────────────────────────────┐   │
-│  │  Issue Created / Updated / Comment Added                                 │   │
-│  └──────────────────────────────────────────────────────────────────────────┘   │
-└──────────────────────────────┬──────────────────────────────────────────────────┘
-                               │
-                               ▼
-╔═════════════════════════════════════════════════════════════════════════════════╗
-║  AEA  —  Autonomous Engineering Agent  (FastAPI · uvicorn)                     ║
-║                                                                                 ║
-║  ┌───────────────────────────────────────────────────────────────────────────┐  ║
-║  │  WEBHOOK HANDLER  (webhook.py)                                            │  ║
-║  │                                                                           │  ║
-║  │   Receives event ──► reads ticket state from SQLite                      │  ║
-║  │                                                                           │  ║
-║  │         ┌─────────────────────────────────────────────┐                  │  ║
-║  │         │          CLASSIFIER  (Claude)               │                  │  ║
-║  │         │                                             │                  │  ║
-║  │         │   AUTOMATABLE ──► code generation flow      │                  │  ║
-║  │         │   CLARIFICATION ──► ask questions in Jira   │                  │  ║
-║  │         │   COMPLEX / NONCODE ──► store & skip        │                  │  ║
-║  │         └─────────────────────────────────────────────┘                  │  ║
-║  └───────────────────────────────────────────────────────────────────────────┘  ║
-║                  │                              │                               ║
-║                  │ AUTOMATABLE                  │ CLARIFICATION                 ║
-║                  ▼                              ▼                               ║
-║  ┌──────────────────────────┐    ┌──────────────────────────────────────────┐  ║
-║  │  CODE GENERATOR          │    │  QUESTION GENERATOR  (Claude)            │  ║
-║  │                          │    │                                          │  ║
-║  │  Pass 1 ──► Claude       │    │  Generates targeted questions            │  ║
-║  │  reads file tree,        │    │  ──► posts as Jira comment               │  ║
-║  │  selects relevant files  │    │  ──► waits for developer reply           │  ║
-║  │                          │    └──────────────────────────────────────────┘  ║
-║  │  Pass 2 ──► Claude       │                                                  ║
-║  │  reads full file content,│                                                  ║
-║  │  generates code changes  │                                                  ║
-║  └──────────┬───────────────┘                                                  ║
-║             │                                                                   ║
-║             ▼                                                                   ║
-║  ┌──────────────────────────┐    ┌──────────────────────────────────────────┐  ║
-║  │  GITHUB FETCHER          │    │  GITHUB PR CREATOR                       │  ║
-║  │                          │    │                                          │  ║
-║  │  • Fetch full file tree  │    │  • Create feature branch                 │  ║
-║  │  • Fetch file contents   │    │  • Commit changed files                  │  ║
-║  │    via GitHub REST API   │    │  • Open Pull Request ──► returns PR URL  │  ║
-║  └──────────────────────────┘    └──────────────┬───────────────────────────┘  ║
-║                                                  │                              ║
-║             ┌────────────────────────────────────┘                             ║
-║             │  PR URL                                                           ║
-║             ▼                                                                   ║
-║  ┌──────────────────────────────────────────────────────────────────────────┐  ║
-║  │  NOTIFIER                                                                │  ║
-║  │                                                                          │  ║
-║  │  ──► Post PR link as Jira comment                                        │  ║
-║  │  ──► Send rich Slack notification  (ticket · repo · files · PR button)   │  ║
-║  │  ──► Transition Jira ticket to "In Progress"                             │  ║
-║  └──────────────────────────────────────────────────────────────────────────┘  ║
-║                                                                                 ║
-╚═════════════════════════════════════════════════════════════════════════════════╝
-          │                          │                          │
-          ▼                          ▼                          ▼
-┌──────────────────┐    ┌────────────────────┐    ┌────────────────────────────┐
-│   GITHUB REPO    │    │    JIRA CLOUD      │    │     SLACK CHANNEL          │
-│                  │    │                    │    │                            │
-│  Feature branch  │    │  PR link comment   │    │  PR created notification   │
-│  File commits    │    │  Status updated    │    │  with direct PR button     │
-│  Pull Request    │    │  to In Progress    │    │                            │
-└──────────────────┘    └────────────────────┘    └────────────────────────────┘
+```mermaid
+flowchart LR
+    IN([INPUT\nJira Ticket]) --> ORCH
+
+    ORCH["ORCHESTRATOR\nwebhook.py\nroutes by state"]
+
+    ORCH -.->|AUTOMATABLE| A1
+    ORCH -.->|AUTOMATABLE| A2
+    ORCH -.->|CLARIFICATION| A3
+
+    A1["AGENT 01\nClassifier\nClaude"]
+    A2["AGENT 02\nCode Reader\nGitHub Fetcher"]
+    A3["AGENT 03\nQuestion Generator\nClaude · posts to Jira"]
+
+    A1 --> A4
+    A2 --> A4
+
+    A4["AGENT 04\nCode Writer\nCode Generator · Claude"]
+    A4 --> A5
+
+    A5["AGENT 05\nPR Opener\nGitHub PR Creator"]
+    A5 --> OUT([OUTPUT\nPull Request])
+
+    OUT -.->|reviewer feedback\nPOST /webhook/github| A6
+
+    A6["AGENT 06\nPR Review Loop\ngithub_webhook.py · Claude"]
+    A6 -.->|revised files| A5
+
+    STATE[/"TicketState { ticket_id, classification, repo, file_list, changes, pr_url }"/]
 ```
 
 ---
