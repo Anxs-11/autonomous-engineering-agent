@@ -92,19 +92,6 @@ AEA connects your Jira project management workflow directly to your GitHub codeb
 
 ---
 
-## Progress
-
-| Week | Feature | Status |
-|------|---------|--------|
-| Week 1 | Jira webhook ingestion + Claude classification + SQLite storage | ✅ Done |
-| Week 2 | Clarification loop — post questions to Jira, re-classify on reply | ✅ Done |
-| Week 3 | GitHub fetcher (file tree + content via REST API) | ✅ Done |
-| Week 4 | Two-pass code generation + GitHub PR creation | ✅ Done |
-| Week 5 | Slack notifications on PR creation and failure | ✅ Done |
-| Week 6 | PR review loop | 🔲 Upcoming |
-
----
-
 ## How It Works
 
 ### 1. Ticket Created in Jira
@@ -145,17 +132,16 @@ aea/
 ├── app/
 │   ├── main.py                        # FastAPI application & lifespan
 │   ├── routes/
-│   │   └── webhook.py                 # POST /webhook/jira — full state machine
+│   │   ├── webhook.py                 # POST /webhook/jira — full state machine
+│   │   └── github_webhook.py          # POST /webhook/github — PR review loop
 │   ├── services/
 │   │   ├── classifier.py              # Claude ticket classification
 │   │   ├── question_generator.py      # Claude clarifying question generation
-│   │   ├── code_generator.py          # Two-pass code generation (Pass 1 + Pass 2)
+│   │   ├── code_generator.py          # Two-pass code generation + review revision
 │   │   ├── github_fetcher.py          # GitHub API: file tree + file content
-│   │   ├── github_pr.py               # GitHub API: branch, commits, PR creation
+│   │   ├── github_pr.py               # GitHub API: branch, commits, PR creation, review helpers
 │   │   ├── jira_client.py             # Jira API: post comments, read comments
-│   │   └── rag/
-│   │       ├── indexer.py             # ChromaDB vector indexing (built, not yet active)
-│   │       └── retriever.py           # ChromaDB semantic retrieval (built, not yet active)
+│   │   └── slack_notifier.py          # Slack Incoming Webhook notifications
 │   ├── models/
 │   │   └── ticket.py                  # Pydantic request/response models
 │   └── db/
@@ -176,7 +162,6 @@ aea/
 - **Jira REST API v3** — comment posting (ADF format), label reading, comment reading
 - **SQLite + SQLAlchemy** — ticket state persistence
 - **ngrok** — local tunnel for Jira webhook delivery during development
-- **ChromaDB** — RAG vector store infrastructure (built, not yet active — code generation currently uses GitHub fetcher directly)
 
 ---
 
@@ -203,25 +188,31 @@ pip install -r requirements.txt
 Copy `.env.example` to `.env` and fill in your real values:
 
 ```env
+# Anthropic / Azure AI
 ANTHROPIC_API_KEY=your-key-here
 ANTHROPIC_BASE_URL=https://your-azure-endpoint.services.ai.azure.com/anthropic
+ANTHROPIC_MODEL=claude-sonnet-4-5   # optional — defaults to claude-sonnet-4-5
 
-DATABASE_URL=sqlite:///./aea.db
+# Database
+DATABASE_URL=sqlite:///./aea.db     # or a PostgreSQL URL for production
 
-JIRA_WEBHOOK_SECRET=           # leave blank to skip signature verification
+# Jira
+JIRA_WEBHOOK_SECRET=                # leave blank to skip signature verification
 JIRA_BASE_URL=https://your-org.atlassian.net/
 JIRA_EMAIL=you@example.com
 JIRA_API_TOKEN=your-jira-token
 JIRA_BOT_ACCOUNT_ID=your-bot-account-id
 
+# GitHub
 GITHUB_TOKEN=ghp_your-token-here
-GITHUB_REPO=                   # leave blank — repo comes from Jira labels
-GITHUB_DEV_BRANCH=dev          # default PR target branch
+GITHUB_WEBHOOK_SECRET=              # leave blank to skip signature verification
+GITHUB_REPO=                        # leave blank — repo comes from Jira labels
+GITHUB_DEV_BRANCH=dev               # default PR target branch
 GITHUB_BRANCH=main
-GITHUB_REPO_PATH_FILTER=       # optional subfolder filter e.g. src/
+GITHUB_REPO_PATH_FILTER=            # optional subfolder filter e.g. src/
 
 # Slack
-SLACK_WEBHOOK_URL=             # Slack Incoming Webhook URL — leave blank to disable
+SLACK_WEBHOOK_URL=                  # Slack Incoming Webhook URL — leave blank to disable
 ```
 
 ### 4. Run the server
@@ -230,13 +221,15 @@ SLACK_WEBHOOK_URL=             # Slack Incoming Webhook URL — leave blank to d
 uvicorn app.main:app --reload --host 0.0.0.0 --port 8000
 ```
 
-### 5. Expose locally with ngrok (for Jira webhook delivery)
+### 5. Expose locally with ngrok (for webhook delivery)
 
 ```bash
 ngrok http 8000
 ```
 
-Register the ngrok URL (`https://xxxx.ngrok.io/webhook/jira`) as a webhook in your Jira project settings.
+Register webhooks in two places:
+- **Jira:** `https://xxxx.ngrok.io/webhook/jira` — in your Jira project → Settings → Webhooks
+- **GitHub:** `https://xxxx.ngrok.io/webhook/github` — in your GitHub repo → Settings → Webhooks (events: Pull request reviews, Pull request review comments)
 
 ---
 
@@ -291,6 +284,18 @@ jira:issue_created
                    │
                    ▼
             Post PR link as Jira comment
+                   │
+                   ▼
+        [Reviewer submits feedback on GitHub PR]
+                   │
+                   ▼
+        Read review comments → re-generate code
+                   │
+                   ▼
+        Commit revised files to same feature branch
+                   │
+                   ▼
+        Post confirmation comment on PR
 ```
 
 ---
@@ -306,6 +311,10 @@ jira:issue_created
 ### `POST /webhook/jira`
 
 Receives `jira:issue_created`, `jira:issue_updated`, and `comment_created` events.
+
+### `POST /webhook/github`
+
+Receives GitHub `pull_request_review` and `pull_request_review_comment` events. When a reviewer requests changes, AEA reads all feedback, regenerates the affected files, commits the revision to the feature branch, and posts a confirmation comment on the PR.
 
 ---
 
