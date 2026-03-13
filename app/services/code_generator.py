@@ -93,6 +93,32 @@ Rules:
 """
 
 
+_REVISION_SYSTEM = """You are an expert software engineer revising your code based on peer review feedback.
+You previously implemented a feature on a Pull Request. A reviewer has now left comments.
+
+Your task: address ALL review feedback and return updated file contents.
+
+Rules:
+- Return ONLY valid JSON — no prose, no markdown fences.
+- Schema:
+  {
+    "changes": [
+      {
+        "file_path": "<repo-relative path>",
+        "new_content": "<complete new file content as a string>"
+      }
+    ],
+    "explanation": "<paragraph summarising what you changed to address the review>"
+  }
+- Always output the FULL file content for every modified file — never partial diffs.
+- Only include files that actually changed in response to the review.
+- Address every review comment — if a suggestion is ambiguous, make the most reasonable interpretation.
+- Preserve existing code style, imports, and patterns.
+- If the review is an approval with no actionable changes, return:
+  {"changes": [], "explanation": "No changes needed — reviewer approved the implementation."}
+"""
+
+
 def _strip_json(text: str) -> str:
     """Strip markdown fences and extract the first JSON object."""
     match = re.search(r"```(?:json)?\s*([\s\S]+?)\s*```", text)
@@ -295,4 +321,107 @@ def generate_code_changes(
     logger.info("[%s]    Files changed : %d", ticket_id, n_changes)
     logger.info("[%s] ==================================================", ticket_id)
     return result
+
+
+# ---------------------------------------------------------------------------
+# Week 6 — Review Revision Pass
+# ---------------------------------------------------------------------------
+
+def generate_revision_from_review(
+    ticket_id: str,
+    pr_title: str,
+    repo: str,
+    branch: str,
+    pr_files: list[str],
+    review_comments: list[dict],
+) -> dict:
+    """
+    Re-generate code changes in response to PR review feedback.
+
+    Fetches the current content of every file changed in the PR from the
+    feature branch, then asks Claude to produce updated versions that
+    address all review comments.
+
+    Returns {"changes": [...], "explanation": str}
+    """
+    _t_start = time.time()
+    logger.info("[%s] ==================================================", ticket_id)
+    logger.info("[%s] 🔍 Review revision starting", ticket_id)
+    logger.info("[%s]    Branch : %s", ticket_id, branch)
+    logger.info("[%s]    Files  : %d | Comments: %d", ticket_id, len(pr_files), len(review_comments))
+    logger.info("[%s] ==================================================", ticket_id)
+
+    # Fetch current file contents from the feature branch
+    file_contents: dict[str, str] = {}
+    for i, path in enumerate(pr_files, 1):
+        try:
+            content = get_file_content(repo, path, branch)
+            if content:
+                logger.info("[%s]    [%d/%d] Fetched: %s (%d chars)", ticket_id, i, len(pr_files), path, len(content))
+                file_contents[path] = content
+            else:
+                logger.warning("[%s] Empty content for %s — skipping.", ticket_id, path)
+        except Exception as exc:
+            logger.warning("[%s] Could not fetch %s: %s", ticket_id, path, exc)
+
+    if not file_contents:
+        return {"changes": [], "explanation": "Could not fetch any PR files for revision."}
+
+    # Build files block
+    files_block = ""
+    for path, content in file_contents.items():
+        files_block += f"\n\n=== {path} ===\n{content}"
+
+    # Build review comments block
+    comments_block = ""
+    for c in review_comments:
+        if c["type"] == "line" and c.get("file"):
+            loc = f"{c['file']} (line {c['line']})" if c.get("line") else c["file"]
+            comments_block += f"\n• [File: {loc}] {c['body']}"
+        else:
+            comments_block += f"\n• [General] {c['body']}"
+
+    user_content = f"""PR Title: {pr_title}
+
+Review feedback from the reviewer:
+{comments_block}
+
+Current file contents on branch '{branch}':{files_block}
+
+Please address all review comments and return the updated file(s) as JSON."""
+
+    try:
+        t0 = time.time()
+        logger.info("[%s] 🤖 Sending revision request to Claude...", ticket_id)
+        response = _client.messages.create(
+            model=_MODEL,
+            max_tokens=16000,
+            temperature=0.1,
+            system=_REVISION_SYSTEM,
+            messages=[{"role": "user", "content": user_content}],
+        )
+        logger.info("[%s] ⏱  Revision Claude call completed in %.1fs", ticket_id, time.time() - t0)
+    except Exception as exc:
+        logger.error("[%s] Revision API error: %s", ticket_id, exc)
+        return {"changes": [], "explanation": f"LLM call failed: {exc}"}
+
+    raw = response.content[0].text if response.content else ""
+    try:
+        result = json.loads(_strip_json(raw))
+    except json.JSONDecodeError as exc:
+        logger.error("[%s] Revision JSON parse failed: %s\nRaw: %s", ticket_id, exc, raw)
+        return {"changes": [], "explanation": f"JSON parse error: {exc}"}
+
+    validated = [
+        {"file_path": str(c["file_path"]).strip(), "new_content": str(c["new_content"])}
+        for c in result.get("changes", [])
+        if isinstance(c, dict) and "file_path" in c and "new_content" in c
+    ]
+
+    elapsed = time.time() - _t_start
+    logger.info("[%s] ==================================================", ticket_id)
+    logger.info("[%s] 🏁 Review revision COMPLETE in %.1fs — %d file(s) updated", ticket_id, elapsed, len(validated))
+    logger.info("[%s] ==================================================", ticket_id)
+    return {"changes": validated, "explanation": result.get("explanation", "")}
+
 

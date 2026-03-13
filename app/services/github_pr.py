@@ -228,3 +228,94 @@ def create_pull_request(
         msg = f"GitHub API error {exc.response.status_code}: {exc.response.text}"
         logger.error(msg)
         raise RuntimeError(msg) from exc
+
+
+# ---------------------------------------------------------------------------
+# PR Review helpers (Week 6)
+# ---------------------------------------------------------------------------
+
+def get_pr_review_comments(repo: str, pr_number: int) -> list[dict]:
+    """
+    Return all human feedback on a PR as a list of dicts:
+      {"type": "review"|"line", "body": str, "file": str|None, "line": int|None}
+
+    Combines:
+    - Review body text  (GET /pulls/{n}/reviews)
+    - Line-level comments (GET /pulls/{n}/comments)
+    """
+    comments: list[dict] = []
+    with httpx.Client(timeout=30) as client:
+        # Review-level comments
+        reviews_resp = client.get(
+            f"{GITHUB_API}/repos/{repo}/pulls/{pr_number}/reviews",
+            headers=_HEADERS,
+        )
+        reviews_resp.raise_for_status()
+        for review in reviews_resp.json():
+            body = (review.get("body") or "").strip()
+            if body:
+                comments.append({"type": "review", "body": body, "file": None, "line": None})
+
+        # Line-level review comments
+        line_resp = client.get(
+            f"{GITHUB_API}/repos/{repo}/pulls/{pr_number}/comments",
+            headers=_HEADERS,
+        )
+        line_resp.raise_for_status()
+        for comment in line_resp.json():
+            body = (comment.get("body") or "").strip()
+            path = comment.get("path", "")
+            line = comment.get("line") or comment.get("original_line")
+            if body:
+                comments.append({"type": "line", "body": body, "file": path, "line": line})
+
+    return comments
+
+
+def get_pr_files(repo: str, pr_number: int) -> list[str]:
+    """Return the list of file paths changed in a PR."""
+    with httpx.Client(timeout=30) as client:
+        resp = client.get(
+            f"{GITHUB_API}/repos/{repo}/pulls/{pr_number}/files",
+            headers=_HEADERS,
+        )
+        resp.raise_for_status()
+        return [f["filename"] for f in resp.json()]
+
+
+def post_pr_comment(repo: str, pr_number: int, body: str) -> None:
+    """Post a general (issue-level) comment on a Pull Request."""
+    with httpx.Client(timeout=30) as client:
+        resp = client.post(
+            f"{GITHUB_API}/repos/{repo}/issues/{pr_number}/comments",
+            headers=_HEADERS,
+            json={"body": body},
+        )
+        resp.raise_for_status()
+        logger.info("Posted comment on PR #%d in %s", pr_number, repo)
+
+
+def commit_revision(
+    ticket_id: str,
+    repo: str,
+    branch: str,
+    changes: list[dict],
+) -> None:
+    """
+    Commit updated files from a review revision onto the existing feature branch.
+    The open PR updates automatically.
+    """
+    if not changes:
+        return
+    with httpx.Client(timeout=30) as client:
+        logger.info("[%s] 📤 Committing %d revised file(s) to branch %s...", ticket_id, len(changes), branch)
+        for i, change in enumerate(changes, 1):
+            path = change["file_path"]
+            content = change["new_content"]
+            existing_sha = _get_file_sha(client, repo, path, branch)
+            commit_msg = f"[{ticket_id}] Review revision: update {path}"
+            logger.info("[%s]    [%d/%d] Committing %s...", ticket_id, i, len(changes), path)
+            _commit_file(client, repo, path, content, branch, commit_msg, existing_sha)
+            time.sleep(0.3)
+        logger.info("[%s] ✅ Revision committed — PR updated automatically.", ticket_id)
+

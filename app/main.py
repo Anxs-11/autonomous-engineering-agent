@@ -5,6 +5,7 @@ from fastapi import FastAPI
 
 from app.db.database import init_db
 from app.routes.webhook import router as webhook_router
+from app.routes.github_webhook import router as github_webhook_router
 
 logging.basicConfig(
     level=logging.INFO,
@@ -37,6 +38,7 @@ app = FastAPI(
 )
 
 app.include_router(webhook_router)
+app.include_router(github_webhook_router)
 
 
 @app.get("/health", tags=["Health"])
