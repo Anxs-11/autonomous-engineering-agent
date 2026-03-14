@@ -1,10 +1,10 @@
 # Autonomous Engineering Agent (AEA)
 
-> An AI-powered agent that reads Jira tickets and autonomously writes code and opens GitHub Pull Requests — with zero human intervention.
+> An autonomous engineering agent that reads Jira tickets, understands the codebase, generates code, and opens GitHub Pull Requests — with zero human intervention.
 
 ## Overview
 
-AEA connects your Jira project management workflow directly to your GitHub codebase. When a developer creates a Jira ticket describing a feature or bug fix, AEA automatically classifies the ticket, asks clarifying questions if needed, reads the relevant parts of the codebase, generates code changes, and opens a Pull Request on GitHub — all without a developer writing a single line of code.
+AEA is an AI agent that autonomously handles the developer workflow end-to-end. When a ticket is created, the agent classifies it, asks clarifying questions if the requirements are vague, reads the relevant parts of the target repository, generates code changes using a two-pass approach, opens a Pull Request, and even addresses reviewer feedback automatically.
 
 ---
 
@@ -13,13 +13,6 @@ AEA connects your Jira project management workflow directly to your GitHub codeb
 <p align="center">
   <img src="architecture.svg" alt="AEA Architecture Diagram" width="900"/>
 </p>
-
-### Orchestration
-
-- **Single orchestrator** — procedural pipeline with branching, not a multi-agent framework
-- **Background threads** via `ThreadPoolExecutor` for code generation and RAG indexing
-- **State machine** — ticket status drives transitions: `AWAITING_CLARIFICATION` → `AWAITING_REPO` → `AUTOMATABLE`
-- **DB persistence** — `TicketRecord { ticket_id · title · description · assignee · classification · reason · status · rag_context · created_at }`
 
 ---
 
