@@ -14,56 +14,6 @@ AEA connects your Jira project management workflow directly to your GitHub codeb
   <img src="architecture.svg" alt="AEA Architecture Diagram" width="900"/>
 </p>
 
-### Flow Summary
-
-```
-Developer creates Jira ticket
-       │
-       ▼  POST /webhook/jira
-  ┌─────────────────────────────────────────────────────────┐
-  │  CLASSIFIER (Claude · SQLite state)                     │
-  │  → AUTOMATABLE · CLARIFICATION · COMPLEX · NONCODE      │
-  └────┬──────────────┬──────────────────┬──────────────────┘
-       │              │                  │
-  automatable    automatable        clarification
-  + repo exists  + no repo              │
-       │              │                  ▼
-       │              ▼           ┌──────────────────┐
-       │     AWAITING_REPO        │ Question Generator│
-       │     (prompts for         │ posts Qs to Jira  │
-       │      repo: label)        │ waits for reply   │
-       │              │           │ re-classify →      │
-       │         label added      │ triggers Code Gen │
-       │              │           └──────────────────┘
-       ▼              ▼
-  ┌──────────────────────┐
-  │  Code Generator       │
-  │  Pass 1: file tree    │
-  │  Pass 2: code changes │
-  │  (Claude · GitHub)    │
-  └──────────┬───────────┘
-             ▼
-  ┌──────────────────────┐     ┌──────────────────────┐
-  │  GitHub PR Creator    │────►│  Notifier             │
-  │  branch · commit · PR │     │  Jira comment         │
-  └──────────┬───────────┘     │  Slack notification   │
-             │                  │  ticket → In Progress │
-             ▼                  └──────────────────────┘
-  ┌──────────┬──────────────┬─────────────────┐
-  │ GITHUB   │  JIRA CLOUD  │  SLACK CHANNEL  │
-  │ branch·PR│  comment·status│  PR notification│
-  └──────────┴──────────────┴─────────────────┘
-
-  ── reviewer adds PR comments · POST /webhook/github ──
-
-  ┌──────────────────────────────────────────────┐
-  │  PR REVIEW LOOP                               │
-  │  reads comments · re-generates · Claude       │
-  │  commits to same branch · no Slack · no Jira  │
-  │  (repeats for each review round)              │
-  └──────────────────────────────────────────────┘
-```
-
 ### Orchestration
 
 - **Single orchestrator** — procedural pipeline with branching, not a multi-agent framework
@@ -73,10 +23,9 @@ Developer creates Jira ticket
 
 ---
 
-## How It Works
+## Key Details
 
-### 1. Ticket Created in Jira
-Jira fires a webhook to AEA. The agent classifies the ticket into one of four labels:
+### Classification Labels
 
 | Label | Meaning |
 |---|---|
@@ -85,24 +34,19 @@ Jira fires a webhook to AEA. The agent classifies the ticket into one of four la
 | `COMPLEX` | Large feature / multi-service — flags for human architecture review |
 | `NONCODE` | Documentation, HR, process — no code change needed |
 
-### 2. Clarification Loop (if needed)
-If the ticket is vague, AEA posts targeted clarifying questions directly as a Jira comment. When the developer replies, the webhook fires again and AEA re-classifies with the full conversation context. Once clear, it proceeds automatically.
+### Two-Pass Code Generation
 
-### 3. Repo Selection via Jira Labels
-The target GitHub repository is read from a `repo:owner/name` label on the Jira ticket — no hardcoded config needed. Optionally, a `branch:branchname` label overrides the default target branch.
+**Pass 1 — File Selection:** Claude receives the full repository file tree (fetched live from GitHub) and the ticket description. It returns a list of the specific files it needs to read.
 
-### 4. Two-Pass Code Generation
-**Pass 1 — File Selection:** Claude receives the full repository file tree (fetched live from GitHub) and the ticket description. It returns a list of the specific files it needs to read to solve the ticket.
+**Pass 2 — Code Generation:** Claude receives the full content of those selected files and generates a JSON diff of changes: which files to create or modify, and exactly what the new content should be.
 
-**Pass 2 — Code Generation:** Claude receives the full content of those selected files (fetched live from GitHub) and generates a JSON diff of changes: which files to create or modify, and exactly what the new content should be.
+The agent reads the codebase directly via the GitHub REST API — always working with the latest code.
 
-No vector database is involved — the agent reads the codebase directly via the GitHub REST API, which ensures it always works with the latest code.
+### Repo & Branch via Jira Labels
 
-### 5. GitHub PR Creation
-AEA creates a feature branch (`{ticket-id}-dev`), commits every changed file, and opens a Pull Request targeting the `dev` branch — with a description explaining every change made.
-
-### 6. Retry Without a New Ticket
-Adding the `aea-retry` label to any existing ticket re-triggers the full code generation flow — no need to create a new ticket.
+- `repo:owner/repository-name` — tells AEA which GitHub repo to target
+- `branch:branchname` — overrides the default `dev` target branch
+- `aea-retry` — re-triggers code generation on any existing ticket
 
 ---
 
@@ -216,68 +160,10 @@ Register webhooks in two places:
 
 ## Usage
 
-### Triggering the Agent
-
 1. Create a Jira ticket with a clear description
-2. Add a label `repo:owner/repository-name` to tell AEA which GitHub repo to work on
+2. Add a label `repo:owner/repository-name` to tell AEA which GitHub repo to target
 3. AEA classifies the ticket — if automatable, it reads the codebase and opens a PR automatically
-
-### Retrying Code Generation
-
-Add the label `aea-retry` to any existing ticket to re-trigger code generation without creating a new ticket.
-
-### Targeting a Specific Branch
-
-Add a label `branch:branchname` to override the default `dev` target branch for the PR.
-
----
-
-## Ticket Lifecycle
-
-```
-jira:issue_created
-       │
-       ▼
-  [Classify]
-       │
-       ├── NONCODE / COMPLEX → stored, no action
-       │
-       ├── CLARIFICATION → post questions to Jira → AWAITING_CLARIFICATION
-       │                        │
-       │                   human replies
-       │                        │
-       │                   re-classify with context
-       │                        │
-       ├── AWAITING_REPO → post comment asking for repo: label
-       │                        │
-       │                   label added → aea-retry → re-trigger
-       │
-       └── AUTOMATABLE + repo label
-                   │
-                   ▼
-            [Pass 1] Claude selects files from tree
-                   │
-                   ▼
-            [Pass 2] Claude generates code changes
-                   │
-                   ▼
-            Create branch → commit files → open PR
-                   │
-                   ▼
-            Post PR link as Jira comment
-                   │
-                   ▼
-        [Reviewer submits feedback on GitHub PR]
-                   │
-                   ▼
-        Read review comments → re-generate code
-                   │
-                   ▼
-        Commit revised files to same feature branch
-                   │
-                   ▼
-        Post confirmation comment on PR
-```
+4. To retry: add `aea-retry` label. To target a different branch: add `branch:branchname` label.
 
 ---
 
