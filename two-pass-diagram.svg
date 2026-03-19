@@ -1,0 +1,99 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="900" height="520" viewBox="0 0 900 520">
+  <defs>
+    <marker id="arrow" markerWidth="10" markerHeight="7" refX="9" refY="3.5" orient="auto">
+      <polygon points="0 0, 10 3.5, 0 7" fill="#555" />
+    </marker>
+    <marker id="arrow-green" markerWidth="10" markerHeight="7" refX="9" refY="3.5" orient="auto">
+      <polygon points="0 0, 10 3.5, 0 7" fill="#00ff88" />
+    </marker>
+    <marker id="arrow-cyan" markerWidth="10" markerHeight="7" refX="9" refY="3.5" orient="auto">
+      <polygon points="0 0, 10 3.5, 0 7" fill="#00bcd4" />
+    </marker>
+    <marker id="arrow-purple" markerWidth="10" markerHeight="7" refX="9" refY="3.5" orient="auto">
+      <polygon points="0 0, 10 3.5, 0 7" fill="#a855f7" />
+    </marker>
+    <marker id="arrow-amber" markerWidth="10" markerHeight="7" refX="9" refY="3.5" orient="auto">
+      <polygon points="0 0, 10 3.5, 0 7" fill="#f59e0b" />
+    </marker>
+  </defs>
+
+  <!-- Background -->
+  <rect width="900" height="520" fill="#0d1117" rx="12" />
+
+  <!-- Title -->
+  <text x="450" y="38" text-anchor="middle" font-family="monospace" font-size="13" fill="#555">— PROJECT AEA · TWO-PASS CODE GENERATION —</text>
+  <text x="450" y="64" text-anchor="middle" font-family="monospace" font-size="22" font-weight="bold" fill="#ffffff">How AEA Reads a Repo and Writes Code</text>
+
+  <!-- ── INPUT ── -->
+  <rect x="30" y="200" width="130" height="60" rx="8" fill="#0d1b2a" stroke="#00ff88" stroke-width="2"/>
+  <text x="95" y="223" text-anchor="middle" font-family="monospace" font-size="10" fill="#00ff88">INPUT</text>
+  <text x="95" y="243" text-anchor="middle" font-family="monospace" font-size="14" font-weight="bold" fill="#00ff88">Jira Ticket</text>
+  <text x="95" y="258" text-anchor="middle" font-family="monospace" font-size="9" fill="#00ff88">description + ticket ID</text>
+
+  <!-- Arrow: INPUT → GitHub -->
+  <line x1="160" y1="230" x2="208" y2="230" stroke="#00ff88" stroke-width="1.5" marker-end="url(#arrow-green)" />
+
+  <!-- ── GITHUB API BOX ── -->
+  <rect x="210" y="110" width="180" height="240" rx="8" fill="#0a1520" stroke="#00bcd4" stroke-width="1.5" stroke-dasharray="6,3"/>
+  <text x="300" y="135" text-anchor="middle" font-family="monospace" font-size="10" fill="#00bcd4">GITHUB REST API</text>
+  <text x="300" y="150" text-anchor="middle" font-family="monospace" font-size="9" fill="#00bcd4">live · always latest commit</text>
+
+  <!-- Step 1 inside GitHub -->
+  <rect x="225" y="162" width="150" height="65" rx="6" fill="#0d1b2a" stroke="#00bcd4" stroke-width="1.5"/>
+  <text x="300" y="181" text-anchor="middle" font-family="monospace" font-size="9" fill="#00bcd4">STEP 1</text>
+  <text x="300" y="197" text-anchor="middle" font-family="monospace" font-size="12" font-weight="bold" fill="#00bcd4">Fetch File Tree</text>
+  <text x="300" y="213" text-anchor="middle" font-family="monospace" font-size="9" fill="#555">GET /git/trees?recursive=1</text>
+  <text x="300" y="225" text-anchor="middle" font-family="monospace" font-size="9" fill="#555">→ list of all file paths</text>
+
+  <!-- Arrow inside GitHub box -->
+  <line x1="300" y1="227" x2="300" y2="255" stroke="#00bcd4" stroke-width="1.5" marker-end="url(#arrow-cyan)" />
+
+  <!-- Step 2 inside GitHub -->
+  <rect x="225" y="257" width="150" height="75" rx="6" fill="#0d1b2a" stroke="#00bcd4" stroke-width="1.5"/>
+  <text x="300" y="276" text-anchor="middle" font-family="monospace" font-size="9" fill="#00bcd4">STEP 2</text>
+  <text x="300" y="292" text-anchor="middle" font-family="monospace" font-size="12" font-weight="bold" fill="#00bcd4">Fetch All Contents</text>
+  <text x="300" y="308" text-anchor="middle" font-family="monospace" font-size="9" fill="#555">GET /contents/{path}</text>
+  <text x="300" y="320" text-anchor="middle" font-family="monospace" font-size="9" fill="#555">concurrently · all files</text>
+
+  <!-- Arrow: GitHub → Pass 1 -->
+  <line x1="390" y1="230" x2="438" y2="230" stroke="#00bcd4" stroke-width="1.5" marker-end="url(#arrow-cyan)" />
+
+  <!-- ── PASS 1 ── -->
+  <rect x="440" y="155" width="185" height="150" rx="8" fill="#1a0a2e" stroke="#a855f7" stroke-width="2"/>
+  <text x="532" y="178" text-anchor="middle" font-family="monospace" font-size="10" fill="#a855f7">PASS 1 · FILE SELECTION</text>
+  <text x="532" y="200" text-anchor="middle" font-family="monospace" font-size="13" font-weight="bold" fill="#a855f7">AEA</text>
+  <text x="532" y="220" text-anchor="middle" font-family="monospace" font-size="10" fill="#888">reads full content of</text>
+  <text x="532" y="235" text-anchor="middle" font-family="monospace" font-size="10" fill="#888">every file in the repo</text>
+  <line x1="460" y1="248" x2="605" y2="248" stroke="#444" stroke-width="1"/>
+  <text x="532" y="266" text-anchor="middle" font-family="monospace" font-size="10" fill="#a855f7">→ returns list of</text>
+  <text x="532" y="281" text-anchor="middle" font-family="monospace" font-size="10" fill="#a855f7">relevant file paths</text>
+  <text x="532" y="296" text-anchor="middle" font-family="monospace" font-size="9" fill="#555">no names, no guessing</text>
+
+  <!-- Arrow: Pass 1 → Pass 2 -->
+  <line x1="625" y1="230" x2="668" y2="230" stroke="#a855f7" stroke-width="1.5" marker-end="url(#arrow-purple)" />
+
+  <!-- ── PASS 2 ── -->
+  <rect x="670" y="155" width="185" height="150" rx="8" fill="#1a1500" stroke="#f59e0b" stroke-width="2"/>
+  <text x="762" y="178" text-anchor="middle" font-family="monospace" font-size="10" fill="#f59e0b">PASS 2 · CODE GENERATION</text>
+  <text x="762" y="200" text-anchor="middle" font-family="monospace" font-size="13" font-weight="bold" fill="#f59e0b">AEA</text>
+  <text x="762" y="220" text-anchor="middle" font-family="monospace" font-size="10" fill="#888">receives full content of</text>
+  <text x="762" y="235" text-anchor="middle" font-family="monospace" font-size="10" fill="#888">selected files (no re-fetch)</text>
+  <line x1="690" y1="248" x2="835" y2="248" stroke="#444" stroke-width="1"/>
+  <text x="762" y="266" text-anchor="middle" font-family="monospace" font-size="10" fill="#f59e0b">→ returns JSON diff</text>
+  <text x="762" y="281" text-anchor="middle" font-family="monospace" font-size="10" fill="#f59e0b">{ file_path, new_content }</text>
+  <text x="762" y="296" text-anchor="middle" font-family="monospace" font-size="9" fill="#555">complete files · no partials</text>
+
+  <!-- Arrow: Pass 2 → Output -->
+  <line x1="762" y1="305" x2="762" y2="355" stroke="#00ff88" stroke-width="1.5" marker-end="url(#arrow-green)" />
+
+  <!-- ── OUTPUT ── -->
+  <rect x="672" y="357" width="180" height="65" rx="8" fill="#0a2010" stroke="#00ff88" stroke-width="2"/>
+  <text x="762" y="378" text-anchor="middle" font-family="monospace" font-size="10" fill="#00ff88">OUTPUT</text>
+  <text x="762" y="398" text-anchor="middle" font-family="monospace" font-size="14" font-weight="bold" fill="#00ff88">Pull Request</text>
+  <text x="762" y="414" text-anchor="middle" font-family="monospace" font-size="9" fill="#00ff88">branch · commits · PR opened</text>
+
+  <!-- ── BOTTOM STATE BAR ── -->
+  <rect x="30" y="448" width="840" height="46" rx="6" fill="#111" stroke="#333" stroke-width="1"/>
+  <text x="450" y="466" text-anchor="middle" font-family="monospace" font-size="10" fill="#555">SHARED STATE</text>
+  <text x="450" y="484" text-anchor="middle" font-family="monospace" font-size="12" fill="#777">TicketState  {  ticket_id · repo · file_tree · all_contents · selected_files · changes · pr_url  }</text>
+</svg>

@@ -304,13 +304,17 @@ def generate_code_changes(
     description: str,
     repo: str,
     branch: str = "main",
+    path_filter: str = "",
 ) -> dict:
     """
     Full two-pass code generation:
-      1. Fetch file tree from GitHub
+      1. Fetch file tree from GitHub (optionally scoped to path_filter)
       2. Fetch full content of ALL files concurrently
-      3. Claude reads entire codebase and selects relevant files
-      4. Claude generates code changes (reuses already-fetched content)
+      3. AEA reads entire codebase and selects relevant files
+      4. AEA generates code changes (reuses already-fetched content)
+
+    path_filter: subfolder prefix e.g. "src/billing/" — set via Jira label
+                 "path:src/billing/" or falls back to GITHUB_REPO_PATH_FILTER env var.
 
     Returns {"changes": [...], "explanation": str}.
     """
@@ -321,11 +325,12 @@ def generate_code_changes(
     logger.info("[%s] ==================================================", ticket_id)
     _t_start = time.time()
 
-    # --- Fetch file tree ---
-    path_filter = os.getenv("GITHUB_REPO_PATH_FILTER", "")
-    logger.info("[%s] 📂 Step 1/4: Fetching file tree from GitHub...", ticket_id)
+    # path_filter: from Jira label (per-ticket) or env var fallback
+    effective_filter = path_filter or os.getenv("GITHUB_REPO_PATH_FILTER", "")
+    logger.info("[%s] 📂 Step 1/3: Fetching file tree from GitHub%s...",
+                ticket_id, f" (filter: {effective_filter})" if effective_filter else "")
     try:
-        file_tree = list_code_files(repo, branch, path_filter)
+        file_tree = list_code_files(repo, branch, effective_filter)
     except Exception as exc:
         logger.error("Failed to fetch file tree for %s: %s", repo, exc)
         return {"changes": [], "explanation": f"Could not fetch repo file tree: {exc}"}

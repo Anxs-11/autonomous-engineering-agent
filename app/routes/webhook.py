@@ -61,13 +61,15 @@ def _extract_text_from_adf(node: dict) -> str:
     ).strip()
 
 
-def _parse_issue_fields(payload: dict) -> tuple[str, str, str, Optional[str], str, str]:
+def _parse_issue_fields(payload: dict) -> tuple[str, str, str, Optional[str], str, str, str]:
     """
-    Extract ticket_id, title, description, assignee, repo, base_branch from payload.
+    Extract ticket_id, title, description, assignee, repo, base_branch, path_filter
+    from payload.
 
-    Repo and base_branch are read from Jira labels:
+    Repo, base_branch, and path_filter are read from Jira labels:
       - ``repo:owner/reponame``  → overrides GITHUB_REPO env var
       - ``branch:branchname``    → overrides GITHUB_DEV_BRANCH env var
+      - ``path:src/billing/``   → scopes file scan to that subfolder
     Falls back to env vars when labels are absent.
     """
     issue: dict = payload.get("issue", {})
@@ -88,9 +90,10 @@ def _parse_issue_fields(payload: dict) -> tuple[str, str, str, Optional[str], st
         assignee_field.get("displayName") if isinstance(assignee_field, dict) else None
     )
 
-    # Parse repo and branch overrides from ticket labels
+    # Parse repo, branch, and path filter overrides from ticket labels
     repo: str = GITHUB_REPO
     base_branch: str = GITHUB_DEV_BRANCH
+    path_filter: str = os.getenv("GITHUB_REPO_PATH_FILTER", "")
     labels: list = fields.get("labels") or []
     for label in labels:
         if isinstance(label, str):
@@ -100,8 +103,11 @@ def _parse_issue_fields(payload: dict) -> tuple[str, str, str, Optional[str], st
             elif label.startswith("branch:"):
                 base_branch = label[len("branch:"):].strip()
                 logger.info("Ticket %s: branch override from label → %s", ticket_id, base_branch)
+            elif label.startswith("path:"):
+                path_filter = label[len("path:"):].strip()
+                logger.info("Ticket %s: path filter from label → %s", ticket_id, path_filter)
 
-    return ticket_id, title, description, assignee, repo, base_branch
+    return ticket_id, title, description, assignee, repo, base_branch, path_filter
 
 
 def _trigger_code_generation(
@@ -110,11 +116,12 @@ def _trigger_code_generation(
     description: str,
     repo: str,
     base_branch: str,
+    path_filter: str = "",
 ) -> None:
     """
     Two-pass code generation in a background thread:
-      1. Claude reads file tree → selects relevant files
-      2. Claude reads full files → generates code changes
+      1. AEA reads full repo contents → selects relevant files
+      2. AEA generates code changes from selected files
     Opens a GitHub PR on *base_branch* and posts the URL to Jira.
 
     Feature branch: {ticket_id}-dev  (e.g. aea-123-dev)
@@ -137,6 +144,7 @@ def _trigger_code_generation(
                 description=description,
                 repo=repo,
                 branch=base_branch,
+                path_filter=path_filter,
             )
             changes = result.get("changes", [])
             explanation = result.get("explanation", "")
@@ -261,7 +269,7 @@ async def jira_webhook(
     if webhook_event not in supported:
         return {"detail": f"Event '{webhook_event}' acknowledged but not processed."}
 
-    ticket_id, title, description, assignee, ticket_repo, ticket_base_branch = _parse_issue_fields(payload)
+    ticket_id, title, description, assignee, ticket_repo, ticket_base_branch, ticket_path_filter = _parse_issue_fields(payload)
 
     # -----------------------------------------------------------------------
     # CASE 1 — New ticket: classify and decide whether to ask questions
@@ -292,6 +300,7 @@ async def jira_webhook(
                 _trigger_code_generation(
                     ticket_id, title, description,
                     repo=ticket_repo, base_branch=ticket_base_branch,
+                    path_filter=ticket_path_filter,
                 )
         else:
             status = result.label.value
@@ -357,6 +366,7 @@ async def jira_webhook(
                 _trigger_code_generation(
                     ticket_id, title, description,
                     repo=ticket_repo, base_branch=ticket_base_branch,
+                    path_filter=ticket_path_filter,
                 )
         else:
             status = result.label.value
@@ -400,6 +410,7 @@ async def jira_webhook(
             _trigger_code_generation(
                 ticket_id, title, description,
                 repo=ticket_repo, base_branch=ticket_base_branch,
+                path_filter=ticket_path_filter,
             )
             db.refresh(existing)
             return existing
@@ -427,6 +438,7 @@ async def jira_webhook(
         _trigger_code_generation(
             ticket_id, title, description,
             repo=ticket_repo, base_branch=ticket_base_branch,
+            path_filter=ticket_path_filter,
         )
         existing.status = "AUTOMATABLE"
         existing.rag_context = ""
@@ -467,6 +479,7 @@ async def jira_webhook(
             _trigger_code_generation(
                 ticket_id, title, description,
                 repo=ticket_repo, base_branch=ticket_base_branch,
+                path_filter=ticket_path_filter,
             )
         logger.info("Ticket %s is now %s — ready for next stage.", ticket_id, new_status)
     existing.title = title
