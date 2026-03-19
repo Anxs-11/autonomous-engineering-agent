@@ -1,16 +1,14 @@
 """
-Week 4 — Code Generation Service (Two-Pass File Selection)
+Code Generation Service — Full-Repo Scan Two-Pass Approach
 
-Instead of chunk-based RAG, uses a smarter two-pass approach:
-
-Pass 1 — File Selection
-    Claude receives the full file tree (paths only) + ticket description.
-    It returns the exact list of files it needs to read to solve the ticket.
-    This ensures no relevant file is missed.
+Pass 1 — Full Repo Scan + File Selection
+    Fetch the full content of EVERY file in the repo concurrently.
+    Claude reads the entire codebase and selects only the files relevant
+    to the ticket — based on actual code, not file names or previews.
 
 Pass 2 — Code Generation
-    Claude receives the full content of every file it selected + ticket.
-    It produces the exact file changes needed.
+    Claude receives the full content of the selected files (already fetched —
+    no second round-trip to GitHub) and produces the exact file changes needed.
 
 Output schema:
     {
@@ -18,7 +16,8 @@ Output schema:
             {"file_path": "app/main.py", "new_content": "...full file..."},
             ...
         ],
-        "explanation": "What was changed and why"
+        "explanation": "What was changed and why",
+        "testing_checklist": ["step 1", ...]
     }
 """
 
@@ -31,7 +30,7 @@ import time
 import anthropic
 from dotenv import load_dotenv
 
-from app.services.github_fetcher import get_file_content, list_code_files
+from app.services.github_fetcher import build_repo_map, get_file_content, list_code_files, fetch_all_file_contents
 
 load_dotenv()
 
@@ -44,19 +43,26 @@ _client = anthropic.Anthropic(
 )
 
 _MODEL = os.getenv("ANTHROPIC_MODEL", "claude-sonnet-4-5")
-_MAX_FILES_TO_FETCH = 15   # cap to avoid context overflow
+_MAX_FILES_TO_FETCH = 15   # cap files returned by Pass 1
+
+# Budget for codebase content sent to Pass 1.
+# ~4 chars per token; 120K token budget leaves ~80K for prompt + response.
+# Override via env var for larger or smaller repos.
+_PASS1_CHAR_BUDGET = int(os.getenv("AEA_PASS1_CHAR_BUDGET", str(120_000 * 4)))
 
 
 _PASS1_SYSTEM = """You are an expert software engineer doing codebase analysis.
-You will be given a Jira ticket and a list of file paths in a repository.
+You will be given a Jira ticket and the FULL content of every file in the repository
+(or as many files as fit within the context window, prioritised by smallest first).
 
-Your task: identify which files you need to read to implement the ticket.
+Your task: read and understand the codebase, then identify exactly which
+files need to be read or modified to implement the ticket.
 
 Rules:
 - Return ONLY valid JSON — no prose, no markdown fences.
 - Schema:
   {"files": ["path/to/file1.py", "path/to/file2.py"]}
-- List only file paths that exist in the provided tree.
+- List only file paths that exist in the provided codebase.
 - Be thorough — include every file that would need to be read or changed.
 - Maximum 15 files.
 - If the ticket cannot be implemented from the available files, return {"files": []}.
@@ -130,24 +136,68 @@ def _strip_json(text: str) -> str:
     return text.strip()
 
 
+def _apply_char_budget(all_contents: dict[str, str], budget: int, ticket_id: str) -> dict[str, str]:
+    """
+    Trim the codebase to fit within the character budget.
+    Strategy: sort files smallest-first, greedily include complete files
+    until the budget is exhausted. Never sends half a file.
+    Logs a warning listing excluded files so nothing is silently dropped.
+    """
+    total = sum(len(c) for c in all_contents.values())
+    if total <= budget:
+        return all_contents  # fits fine, nothing to trim
+
+    sorted_files = sorted(all_contents.items(), key=lambda x: len(x[1]))
+    included: dict[str, str] = {}
+    used = 0
+    excluded = []
+    for path, content in sorted_files:
+        if used + len(content) <= budget:
+            included[path] = content
+            used += len(content)
+        else:
+            excluded.append(path)
+
+    logger.warning(
+        "[%s] ⚠️  Codebase too large for context window (%d chars, budget %d chars). "
+        "Excluded %d file(s): %s. "
+        "Set AEA_PASS1_CHAR_BUDGET env var to increase the budget.",
+        ticket_id, total, budget, len(excluded), excluded,
+    )
+    logger.info("[%s] 📊 Sending %d/%d files (%d chars) to Pass 1.",
+                ticket_id, len(included), len(all_contents), used)
+    return included
+
+
 def _pass1_select_files(
-    ticket_id: str, title: str, description: str, file_tree: list[str]
+    ticket_id: str,
+    title: str,
+    description: str,
+    all_file_contents: dict[str, str],
 ) -> list[str]:
     """
-    Pass 1: Ask Claude which files it needs to read to solve this ticket.
+    Pass 1: Claude reads the FULL content of every file in the repo and
+    selects which ones are relevant to the ticket.
+    Files are trimmed to the character budget (smallest files first) before
+    being sent, so the context window is never exceeded.
     Returns a filtered list of valid file paths.
     """
-    tree_text = "\n".join(file_tree)
+    budgeted = _apply_char_budget(all_file_contents, _PASS1_CHAR_BUDGET, ticket_id)
+
+    codebase_block = ""
+    for path, content in budgeted.items():
+        codebase_block += f"\n\n=== {path} ===\n{content}"
+
     user_content = f"""Ticket ID: {ticket_id}
 Title: {title}
 
 Description:
 {description}
 
-Repository file tree:
-{tree_text}
+Full repository codebase:
+{codebase_block}
 
-Which files do you need to read to implement this ticket? Return JSON."""
+Which files need to be read or modified to implement this ticket? Return JSON."""
 
     try:
         t0 = time.time()
@@ -171,12 +221,12 @@ Which files do you need to read to implement this ticket? Return JSON."""
         logger.error("Pass 1 JSON parse failed. Raw: %s", raw)
         return []
 
-    # Validate: only keep paths that actually exist in the tree
-    tree_set = set(file_tree)
-    valid = [f for f in selected if f in tree_set]
+    # Validate: only keep paths that actually exist in the fetched contents
+    valid_paths = set(all_file_contents.keys())
+    valid = [f for f in selected if f in valid_paths]
     logger.info(
         "[%s] ✅ Pass 1 done: selected %d/%d file(s): %s",
-        ticket_id, len(valid), len(file_tree), valid,
+        ticket_id, len(valid), len(all_file_contents), valid,
     )
     return valid[:_MAX_FILES_TO_FETCH]
 
@@ -258,9 +308,9 @@ def generate_code_changes(
     """
     Full two-pass code generation:
       1. Fetch file tree from GitHub
-      2. Claude selects which files it needs
-      3. Fetch full content of those files
-      4. Claude generates code changes
+      2. Fetch full content of ALL files concurrently
+      3. Claude reads entire codebase and selects relevant files
+      4. Claude generates code changes (reuses already-fetched content)
 
     Returns {"changes": [...], "explanation": str}.
     """
@@ -283,35 +333,24 @@ def generate_code_changes(
     if not file_tree:
         return {"changes": [], "explanation": "No indexable files found in the repository."}
 
-    logger.info("[%s] ✅ Step 1/4 done: %d files in tree", ticket_id, len(file_tree))
+    logger.info("[%s] ✅ Step 1/3 done: %d files in tree", ticket_id, len(file_tree))
 
-    # --- Pass 1: select files ---
-    logger.info("[%s] 🧠 Step 2/4: Pass 1 — Claude selecting relevant files...", ticket_id)
-    selected_files = _pass1_select_files(ticket_id, title, description, file_tree)
+    # --- Fetch ALL file contents concurrently ---
+    logger.info("[%s] 📥 Step 2/3: Fetching full content of all %d files concurrently...", ticket_id, len(file_tree))
+    all_file_contents = fetch_all_file_contents(repo, file_tree, branch)
+    if not all_file_contents:
+        return {"changes": [], "explanation": "Could not fetch any file content from the repository."}
+    logger.info("[%s] ✅ Step 2/3 done: fetched %d files", ticket_id, len(all_file_contents))
+
+    # --- Pass 1: Claude reads full codebase, selects relevant files ---
+    logger.info("[%s] 🧠 Step 3/3 Part A: Pass 1 — Claude scanning full repo and selecting files...", ticket_id)
+    selected_files = _pass1_select_files(ticket_id, title, description, all_file_contents)
     if not selected_files:
         return {"changes": [], "explanation": "Claude could not identify relevant files for this ticket."}
 
-    # --- Fetch full file contents ---
-    file_contents: dict[str, str] = {}
-    logger.info("[%s] 📥 Step 3/4: Fetching %d file(s) from GitHub...", ticket_id, len(selected_files))
-    for i, path in enumerate(selected_files, 1):
-        try:
-            content = get_file_content(repo, path, branch)
-            if content:
-                logger.info("[%s]    [%d/%d] Fetched: %s (%d chars)", ticket_id, i, len(selected_files), path, len(content))
-                file_contents[path] = content
-            else:
-                logger.warning("Empty content for %s — skipping.", path)
-        except Exception as exc:
-            logger.warning("Could not fetch %s: %s", path, exc)
-
-    if not file_contents:
-        return {"changes": [], "explanation": "Could not fetch content of any selected files."}
-
-    logger.info("[%s] ✅ Step 3/4 done: fetched %d file(s) for Pass 2", ticket_id, len(file_contents))
-
-    # --- Pass 2: generate code ---
-    logger.info("[%s] 🤖 Step 4/4: Pass 2 — Claude generating code changes...", ticket_id)
+    # --- Pass 2: generate code using already-fetched content (no re-fetch) ---
+    file_contents = {path: all_file_contents[path] for path in selected_files if path in all_file_contents}
+    logger.info("[%s] 🤖 Step 3/3 Part B: Pass 2 — Claude generating code changes...", ticket_id)
     result = _pass2_generate_code(ticket_id, title, description, file_contents)
 
     elapsed = time.time() - _t_start
